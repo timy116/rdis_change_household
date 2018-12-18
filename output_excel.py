@@ -1,21 +1,24 @@
 import datetime
+import linecache
 import json
 import openpyxl
 import os
 import time
+import win32com.client as win
 from collections import namedtuple
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Border, Side
 
-MAIN = True
-# SAMPLE_PATH = '..\\..\\input\\easy.txt'
-SAMPLE_PATH = '..\\..\\input\\main_107farmerSurvey_investigator.txt' if MAIN else '..\\..\\input\\sub_107farmerSurvey_investigator.txt'
-JSON_PATH = '..\\..\\output\\json\\公務資料.json' if MAIN else '..\\..\\output\\json\\公務資料_備選.json'
-# JSON_PATH = '..\\..\\output\\json\\json.json'
-FOLDER_NAME = '主選特約_公務資料' if MAIN else '備選特約_公務資料'
-FOLDER_PATH = '..\\..\\output\\' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + FOLDER_NAME
 
-EXCEPT_NUM = ['100140500520', '640200004190', '100091202591', '100140407561', '670090000233', '100091700643',
+# constants
+MAIN = False
+LIST = 'list.txt'
+SAMPLE_PATH = 'sub_107farmerSurvey_investigator(5).txt'
+JSON_PATH = '公務資料_備選.json'
+FOLDER_NAME = '換戶資料'
+FOLDER_PATH = 'temp\\' + datetime.datetime.now().strftime('%Y%m%d_%H-%M-%S_') + FOLDER_NAME
+OUTPUT_PATH = 'output\\' + datetime.datetime.now().strftime('%Y%m%d_%H-%M-%S_') + FOLDER_NAME
+EXCLUDE_NUM = ['100140500520', '640200004190', '100091202591', '100140407561', '670090000233', '100091700643',
               '660290006014', '670320007154',
               '670260004055', '100131304635']
 SAMPLE_TITLES = ['農戶編號', '調查姓名', '電話', '地址', '出生年', '原層別', '連結編號']
@@ -52,13 +55,14 @@ BORDER = Border(
     right=SIDE
 )
 
-# sorted by county
+# sort by investigator name
 sample_dict = {}
 investigator_dict = {}
 official_data = json.loads(open(JSON_PATH, encoding='utf8').read())
 
 if not os.path.isdir(FOLDER_PATH):
     os.mkdir(FOLDER_PATH)
+    os.mkdir(OUTPUT_PATH)
 
 
 def set_excel_title(sheet, row_index, flag, titles) -> None:
@@ -75,26 +79,30 @@ def set_excel_title(sheet, row_index, flag, titles) -> None:
 
 def read_sample() -> None:
     """
-    讀取 sample 檔並使用 dict, key = county : value = 住在這縣市的人
+    讀取 sample 檔並使用 dict, key = investigator_name : value = data
     """
-    with open(SAMPLE_PATH, encoding='utf8') as f:
+    with open(SAMPLE_PATH, encoding='utf8') as f, open(LIST, encoding='utf8') as f1:
+        change_list = [i.strip() for i in f1]
+
         for line in f:
             sample = Sample._make(line.split('\t'))
             inv_name = sample.inv_name.strip()
 
-            if inv_name not in investigator_dict:
-                investigate_l = [sample]
-                investigator_dict[inv_name] = investigate_l
-            else:
-                investigator_dict.get(inv_name).append(sample)
+            link_num = sample.num[-5:] if sample.num[-5:][0] != '0' else sample.num[-4:]
+            if link_num in change_list:
+                if not sample.id:
+                    print('Warning: ' + sample.num + ' 身份證字號為空')
+
+                if inv_name not in investigator_dict:
+                    investigate_l = [sample]
+                    investigator_dict[inv_name] = investigate_l
+                else:
+                    investigator_dict.get(inv_name).append(sample)
 
 
-def output_excel(type_flag=TYPE_FLAG) -> None:
+def output_excel() -> None:
     for inv_name, samples in investigator_dict.items():
-        if type_flag == '主選':
-            samples.sort(key=lambda x: x.county + x.town + x.addr)
-        else:
-            samples.sort(key=lambda x: x.num[-5:])
+        samples.sort(key=lambda x: x.num[-5:])
         wb = openpyxl.Workbook()
         col_index = 1
         row_index = 1
@@ -108,10 +116,10 @@ def output_excel(type_flag=TYPE_FLAG) -> None:
             crops = []
             sample_data = official_data.get(farmer_num)
             if sample_data is None:
-                if farmer_num in EXCEPT_NUM:
-                    ...
+                if farmer_num in EXCLUDE_NUM:
+                    print('Warning: ' + farmer_num + ' 此戶為家庭收支的調查對象')
                 else:
-                    ...
+                    print('Warning ' + farmer_num + ' 此對象重複(公務資料重覆)')
             else:
                 if row_index - 1 == 0:
                     width = list(
@@ -309,8 +317,10 @@ def output_excel(type_flag=TYPE_FLAG) -> None:
             row_index += 1
             sheet.cell(column=col_index, row=row_index).value = ''
 
-        excel_name = FOLDER_PATH + '\\' + inv_name + '＿主選公務資料.xlsx' if MAIN else FOLDER_PATH + '\\' + inv_name + '＿備選3套公務資料' + '.xlsx'
+        file_name = inv_name + '＿公務資料' + '.xlsx'
+        excel_name = FOLDER_PATH + '\\' + file_name
         wb.save(excel_name)
+        encrypt_excel(excel_name, file_name)
         output_sample_roster(inv_name, samples)
 
 
@@ -341,7 +351,7 @@ def output_sample_roster(name, s, type_flag=TYPE_FLAG) -> None:
                 if index == 4:
                     for i in range(1, 12):
                         sheet.cell(index, i).border = BORDER
-        if sample.num in EXCEPT_NUM:
+        if sample.num in EXCLUDE_NUM:
             num = '*' + sample.num
             flag = True
         else:
@@ -372,12 +382,24 @@ def output_sample_roster(name, s, type_flag=TYPE_FLAG) -> None:
         row_index += 1
         sheet.merge_cells(start_row=row_index, start_column=1, end_row=row_index, end_column=11)
         sheet.cell(column=1, row=row_index).value = "備註: 星號(*)為家庭收支的調查對象,請換戶"
-    excel_name = FOLDER_PATH + '\\' + inv_name + '＿主選樣本名冊.xlsx' if MAIN else FOLDER_PATH + '\\' + inv_name + '＿備選3套樣本名冊' + '.xlsx'
+
+    file_name = inv_name + '＿樣本名冊' + '.xlsx'
+    excel_name = FOLDER_PATH + '\\' + file_name
     wb.save(excel_name)
+    encrypt_excel(excel_name, file_name)
 
 
-start_time = time.time()
-read_sample()
-output_excel()
-m, s = divmod(time.time() - start_time, 60)
-print(int(m), 'min', round(s, 1), 'sec')
+def encrypt_excel(path, file_name):
+    excel = win.gencache.EnsureDispatch('Excel.Application')
+    password = linecache.getline('pwd.txt', 1).strip()
+    wb = excel.Workbooks.Open(os.getcwd() + '\\' + path)
+    wb.SaveAs(os.getcwd() + '\\' + OUTPUT_PATH + '\\' + file_name, Password=password)
+    excel.Application.Quit()
+
+
+if __name__ == '__main__':
+    start_time = time.time()
+    read_sample()
+    output_excel()
+    m, s = divmod(time.time() - start_time, 60)
+    print('complete (', int(m), 'min', round(s, 1), 'sec)')
